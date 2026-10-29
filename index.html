@@ -377,7 +377,7 @@ body::after{
   font-size:8px;letter-spacing:0.4em;color:var(--dim);
   text-transform:uppercase;margin-bottom:4px;padding-left:4px;
 }
-.panel-canvas-wrap{position:relative;overflow:hidden;}
+.panel-canvas-wrap{position:relative;overflow:hidden;padding:0 12px;}
 #eqCanvas{width:100%;height:68px;display:block;position:relative;z-index:0;}
 
 /* ── Seekbar waveform ── */
@@ -834,7 +834,7 @@ let audioCtx, analyser, analyserL, analyserR, splitter, gainNode;
 let meterProcessor = null, meterSilentGain = null;
 let liveLufsMomentary = -70;
 let livePeakDb = -60;
-let dataArray, freqArray, bufferLength;
+let dataArray, freqArray, eqDbArray, bufferLength;
 let sourceNode = null;
 let startTime = 0, pauseOffset = 0, isPlaying = false;
 // startPlaybackFromOffset の競合対策:非同期 resume 待ち中に再呼び出しされた場合、
@@ -1027,6 +1027,7 @@ function initAudioCtx() {
   bufferLength = analyser.frequencyBinCount;
   dataArray = new Uint8Array(bufferLength);
   freqArray = new Uint8Array(bufferLength);
+  eqDbArray = new Float32Array(bufferLength);
 }
 volSlider.addEventListener('input', () => {
   if (!gainNode) return;
@@ -1977,16 +1978,15 @@ function updateIntegratedLUFS(momentary) {
 
 // ── Bar Meter drawing ──
 // ── LUFS Reactive Theme Engine ──
-// 静音→青 / 通常→シアン / 高揚→紫 / 高LUFS→マゼンタ〜ホットピンク。
-// 旧版は -16〜-7 LUFS という狭い範囲で「青→ほぼ白」だったため、変化が視覚的に分かりにくかった。
-// -28〜-6 LUFS を4ゾーンに分け、CSS変数とCanvasの双方へ同じ色を供給する。
-const TH = { c:0, r:88, g:118, b:176, s:'88,118,176', s2:'126,150,196', sd:'37,52,78' };
+// 静音の青〜通常のシアンは維持し、高LUFSほど青白く発光する。
+// CSS変数とCanvasへ同じ色を供給する。
+const TH = { c:0, cool:0, r:88, g:118, b:176, s:'88,118,176', s2:'126,150,196', sd:'37,52,78' };
 const TH_STOPS = [
   {lu:-28, c:[72,102,158],   c2:[104,132,184]}, // quiet / deep blue
   {lu:-20, c:[76,178,224],   c2:[130,214,242]}, // normal / cyan
-  {lu:-14, c:[132,112,244],  c2:[184,158,255]}, // energetic / violet
-  {lu:-9,  c:[226,86,214],   c2:[248,136,230]}, // loud / magenta
-  {lu:-6,  c:[255,72,122],   c2:[255,148,178]}  // hot / pink-red
+  {lu:-14, c:[142,202,244],  c2:[184,226,255]}, // energetic / ice blue
+  {lu:-9,  c:[194,228,255],  c2:[220,240,255]}, // loud / blue-white
+  {lu:-6,  c:[226,244,255],  c2:[244,250,255]}  // hot / luminous blue-white
 ];
 let thLastT=0, thFrame=0;
 function _mixRGB(a,b,t){
@@ -2019,6 +2019,8 @@ function updateTheme(lufs){
   const target=Math.max(0,Math.min(1,(lr+28)/22));
   const k=target>TH.c ? 1-Math.pow(0.012,dt) : 1-Math.pow(0.18,dt);
   TH.c+=(target-TH.c)*k;
+  // -20 LUFS以下の装飾色はそのまま。高音圧側だけ青白く寄せる。
+  TH.cool=Math.max(0,Math.min(1,(TH.c*22-8)/14));
 
   // 色そのものはLUFS値から決め、短い時定数で追従。これで「confだけ動いて色が変わらない」を防ぐ。
   const dest=_themeColorForLUFS(lr);
@@ -2035,6 +2037,7 @@ function updateTheme(lufs){
     const st=document.documentElement.style;
     st.setProperty('--ac',TH.s);
     st.setProperty('--ac2',TH.s2);
+    st.setProperty('--hot',_mixRGB([255,88,142],[226,244,255],TH.cool).join(','));
     st.setProperty('--conf',TH.c.toFixed(3));
     // iOSホーム画面/ブラウザUIのテーマ色もゆっくり追従
     const meta=document.getElementById('themeColorMeta');
@@ -2093,6 +2096,8 @@ function draw(ts) {
 
   analyser.getByteTimeDomainData(dataArray);
   analyser.getByteFrequencyData(freqArray);
+  // Byteデータは既定の-30dBで飽和するため、EQには上限で欠けない実dB値を使う。
+  analyser.getFloatFrequencyData(eqDbArray);
 
   let sum = 0;
   for (let i = 0; i < bufferLength; i++) { const v = (dataArray[i]/128)-1; sum += v*v; }
@@ -2138,8 +2143,8 @@ function draw(ts) {
   const lufsNorm = Math.max(0, Math.min(1, (lufsAvg + 70) / 55));
   { const sx = Math.round(lufsNorm * 1000) / 1000;
     if (sx !== lufsBar._lastSx) { lufsBar.style.transform = 'scaleX(' + sx + ')'; lufsBar._lastSx = sx; } }
-  { const lufsBg = lufsAvg > -9 ? 'linear-gradient(90deg,#ff5d86,#ff2e62)'
-      : lufsAvg > -14 ? 'linear-gradient(90deg,#8e6bff,#c79bff)'
+  { const lufsBg = lufsAvg > -9 ? 'linear-gradient(90deg,#c2e4ff,#e2f4ff)'
+      : lufsAvg > -14 ? 'linear-gradient(90deg,#8ecaf4,#b8e2ff)'
       : 'linear-gradient(90deg,#79c8ff,#cfeeff)';
     if (lufsBg !== lufsBar._lastBg) { lufsBar.style.background = lufsBg; lufsBar._lastBg = lufsBg; } }
   if (lufsIntValNum) lufsIntValNum.textContent = lufsInt.toFixed(1);
@@ -2250,58 +2255,62 @@ function drawImager() {
 
 const EQ_FREQS = [20,50,100,200,500,1000,2000,5000,10000,20000];
 const EQ_LABELS = ['20','50','100','200','500','1k','2k','5k','10k','20k'];
-function freqToX(f, W) {
-  const logMin=Math.log10(20), logMax=Math.log10(20000);
+function freqToX(f, W, maxFreq=20000) {
+  const logMin=Math.log10(20), logMax=Math.log10(maxFreq);
   return ((Math.log10(f)-logMin)/(logMax-logMin))*W;
 }
 function drawEQ() {
   const W=cw(eqCanvas), H=ch(eqCanvas);
+  if(!W||!H||!eqDbArray||!eqDbArray.length) return;
   const sampleRate=audioCtx?audioCtx.sampleRate:44100;
   const nyq=sampleRate/2;
-  // 上端に余白:0dBの線とラベルが縁で切れんように
-  const TOP=14;
-  const dbY=db=>TOP+(1-(db+60)/60)*(H-TOP);
+  const maxFreq=Math.min(20000,nyq);
+  const binHz=nyq/eqDbArray.length;
+  // 実際の-100〜0dBを表示し、波形と目盛りの上下に余白を取る。
+  const TOP=10, BOTTOM=H-12, minDB=-100;
+  const dbY=db=>TOP+Math.max(0,Math.min(1,db/minDB))*(BOTTOM-TOP);
+  const binDB=i=>Number.isFinite(eqDbArray[i])?Math.max(minDB,eqDbArray[i]):minDB;
+  // 20Hzと上端周波数も補間し、線が途中から始まったり途切れたりしないようにする。
+  const dbAt=f=>{
+    const bin=Math.min(eqDbArray.length-1,f/binHz), lo=Math.floor(bin);
+    const hi=Math.min(eqDbArray.length-1,lo+1), t=bin-lo;
+    return binDB(lo)*(1-t)+binDB(hi)*t;
+  };
   ec.clearRect(0,0,W,H);
   ec.fillStyle='rgba(5,6,18,0.40)'; ec.fillRect(0,0,W,H);
-  const dbLines=[-60,-48,-36,-24,-12,0];
+  const dbLines=[-100,-80,-60,-40,-20,0];
   dbLines.forEach(d=>{
     const y=dbY(d);
     ec.beginPath(); ec.moveTo(0,y); ec.lineTo(W,y);
     ec.strokeStyle=d===0?'rgba('+TH.s+',0.22)':'rgba('+TH.sd+',0.30)';
     ec.lineWidth=d===0?1:0.5; ec.stroke();
-    if(d>-60){ ec.fillStyle='rgba('+TH.sd+',0.9)'; ec.font='8px Share Tech Mono'; ec.fillText(d+'dB',2,y-2); }
+    if(d>minDB){ ec.fillStyle='rgba('+TH.sd+',0.9)'; ec.font='8px Share Tech Mono'; ec.fillText(d+'dB',2,y-2); }
   });
   EQ_FREQS.forEach((f,i)=>{
-    const x=freqToX(f,W);
-    ec.beginPath(); ec.moveTo(x,0); ec.lineTo(x,H);
+    if(f>maxFreq) return;
+    const x=freqToX(f,W,maxFreq);
+    ec.beginPath(); ec.moveTo(x,TOP); ec.lineTo(x,BOTTOM);
     ec.strokeStyle='rgba('+TH.sd+',0.30)'; ec.lineWidth=0.5; ec.stroke();
-    ec.fillStyle='rgba('+TH.sd+',0.95)'; ec.font='8px Share Tech Mono'; ec.fillText(EQ_LABELS[i],x+2,H-2);
+    ec.fillStyle='rgba('+TH.sd+',0.95)'; ec.font='8px Share Tech Mono';
+    const label=EQ_LABELS[i], labelW=ec.measureText(label).width;
+    ec.fillText(label,Math.max(2,Math.min(x+2,W-labelW-2)),H-2);
   });
-  ec.beginPath(); let started=false;
-  for(let i=1;i<bufferLength;i++){
-    const f=i*nyq/bufferLength;
-    if(f<20||f>20000) continue;
-    const x=freqToX(f,W);
-    const db=freqArray[i]/255*60-60;
-    const y=dbY(db);
-    if(!started){ec.moveTo(x,H);ec.lineTo(x,y);started=true;} else ec.lineTo(x,y);
+  const curve=new Path2D();
+  curve.moveTo(0,dbY(dbAt(20)));
+  for(let i=Math.ceil(20/binHz);i<eqDbArray.length;i++){
+    const f=i*binHz;
+    if(f>=maxFreq) break;
+    curve.lineTo(freqToX(f,W,maxFreq),dbY(binDB(i)));
   }
-  ec.lineTo(W,H); ec.closePath();
+  curve.lineTo(W,dbY(dbAt(maxFreq)));
+  const area=new Path2D(curve);
+  area.lineTo(W,BOTTOM); area.lineTo(0,BOTTOM); area.closePath();
   const grad=ec.createLinearGradient(0,0,0,H);
   grad.addColorStop(0,'rgba('+TH.s+',0.45)');
   grad.addColorStop(0.5,'rgba('+TH.s2+',0.18)');
   grad.addColorStop(1,'rgba('+TH.sd+',0.04)');
-  ec.fillStyle=grad; ec.fill();
-  ec.beginPath(); started=false;
-  for(let i=1;i<bufferLength;i++){
-    const f=i*nyq/bufferLength;
-    if(f<20||f>20000) continue;
-    const x=freqToX(f,W);
-    const db=freqArray[i]/255*60-60;
-    const y=dbY(db);
-    if(!started){ec.moveTo(x,y);started=true;} else ec.lineTo(x,y);
-  }
-  ec.strokeStyle='rgba('+TH.s+',0.9)'; ec.lineWidth=1.5; ec.stroke();
+  ec.fillStyle=grad; ec.fill(area);
+  ec.strokeStyle='rgba('+TH.s+',0.9)'; ec.lineWidth=1.5; ec.stroke(curve);
 }
 
 // ── Viz Zone: "GLASS CORE" ──
@@ -2339,7 +2348,10 @@ const VZ_C_MAG    = [255,120,225];
 const VZ_C_WHITE  = [238,246,255];
 function vzMix(a, b, t) {
   const u = t<0?0:t>1?1:t;
-  return ((a[0]+(b[0]-a[0])*u)|0)+','+((a[1]+(b[1]-a[1])*u)|0)+','+((a[2]+(b[2]-a[2])*u)|0);
+  // 低音圧時のパレットを保ち、シェル・コア・リングも高音圧時は青白くする。
+  const r=a[0]+(b[0]-a[0])*u, g=a[1]+(b[1]-a[1])*u, bl=a[2]+(b[2]-a[2])*u;
+  return ((r+(VZ_C_WHITE[0]-r)*TH.cool)|0)+','+
+    ((g+(VZ_C_WHITE[1]-g)*TH.cool)|0)+','+((bl+(VZ_C_WHITE[2]-bl)*TH.cool)|0);
 }
 
 // 正二十面体（頂点12 / 辺30）を一度だけ構築
@@ -2420,7 +2432,7 @@ function vzDrawFluid(ctx, size, ox, oy, oz, fov, cX,sX,cY,sY,cZ,sZ, alpha, disto
   ctx.lineWidth=0.7;
   ctx.strokeStyle='rgba('+vzMix(VZ_C_WHITE,VZ_C_ICE,0.3)+','+(alpha).toFixed(3)+')';        ctx.stroke(paths[0]);
   ctx.strokeStyle='rgba('+vzMix(VZ_C_ICE,VZ_C_VIOLET,0.5)+','+(alpha*0.55).toFixed(3)+')';  ctx.stroke(paths[1]);
-  ctx.strokeStyle='rgba('+VZ_C_VIOLET.join(',')+','+(alpha*0.22).toFixed(3)+')';            ctx.stroke(paths[2]);
+  ctx.strokeStyle='rgba('+vzMix(VZ_C_VIOLET,VZ_C_VIOLET,0)+','+(alpha*0.22).toFixed(3)+')'; ctx.stroke(paths[2]);
 }
 
 // 星屑パーティクル（単位座標で一度だけ生成）
@@ -2526,8 +2538,8 @@ function drawVizZoneToCtx(ctx, W, H, norm, peakDb, lufsDb) {
   if(lufsGlow>0.02||vzKickEnergy>0.05){
     const g=lufsGlow*0.55+vzKickEnergy*0.3, gr=ms*(1.1+lufsGlow*0.7);
     const grd=ctx.createRadialGradient(cx,cyv,0,cx,cyv,gr);
-    grd.addColorStop(0,'rgba(190,150,255,'+(g*0.4).toFixed(3)+')');
-    grd.addColorStop(0.55,'rgba(120,90,230,'+(g*0.12).toFixed(3)+')');
+    grd.addColorStop(0,'rgba('+vzMix([190,150,255],VZ_C_WHITE,0)+','+(g*0.4).toFixed(3)+')');
+    grd.addColorStop(0.55,'rgba('+vzMix([120,90,230],VZ_C_WHITE,0)+','+(g*0.12).toFixed(3)+')');
     grd.addColorStop(1,'rgba(0,0,0,0)');
     ctx.fillStyle=grd; ctx.beginPath(); ctx.arc(cx,cyv,gr,0,Math.PI*2); ctx.fill();
   }
@@ -2538,7 +2550,7 @@ function drawVizZoneToCtx(ctx, W, H, norm, peakDb, lufsDb) {
     const fg=ctx.createLinearGradient(cx-fw/2,0,cx+fw/2,0);
     const fa=(0.10+lufsGlow*0.28+vzKickEnergy*0.15).toFixed(3);
     fg.addColorStop(0,'rgba(150,240,255,0)');
-    fg.addColorStop(0.5,'rgba(235,246,255,'+fa+')');
+    fg.addColorStop(0.5,'rgba('+vzMix([235,246,255],VZ_C_WHITE,0)+','+fa+')');
     fg.addColorStop(1,'rgba(168,140,252,0)');
     ctx.fillStyle=fg; ctx.fillRect(cx-fw/2, cyv-fh/2, fw, fh);
     ctx.fillStyle='rgba(255,255,255,'+(lufsGlow*0.22).toFixed(3)+')';
@@ -2579,7 +2591,7 @@ function drawVizZoneToCtx(ctx, W, H, norm, peakDb, lufsDb) {
     ctx.lineCap='butt';
     // ベースライン
     ctx.beginPath(); ctx.arc(cx,cyv,r0-1,0,Math.PI*2);
-    ctx.strokeStyle='rgba(150,240,255,'+(0.05+energy*0.06).toFixed(3)+')';
+    ctx.strokeStyle='rgba('+vzMix(VZ_C_ICE,VZ_C_ICE,0)+','+(0.05+energy*0.06).toFixed(3)+')';
     ctx.lineWidth=0.7; ctx.stroke();
   }
 
@@ -2597,7 +2609,7 @@ function drawVizZoneToCtx(ctx, W, H, norm, peakDb, lufsDb) {
       const s=fov/den, px2=cx+_vtmp[0]*s, py2=cyv+_vtmp[1]*s;
       k===0?ctx.moveTo(px2,py2):ctx.lineTo(px2,py2);
     }
-    ctx.strokeStyle='rgba(168,140,252,'+(0.07+energy*0.10).toFixed(3)+')';
+    ctx.strokeStyle='rgba('+vzMix(VZ_C_VIOLET,VZ_C_VIOLET,0)+','+(0.07+energy*0.10).toFixed(3)+')';
     ctx.lineWidth=0.7; ctx.stroke();
     // コメット×3：中域に脈動、短いトレイル付き
     const trail=small?3:7;
@@ -2647,7 +2659,7 @@ function drawVizZoneToCtx(ctx, W, H, norm, peakDb, lufsDb) {
     ctx.stroke();
     const ds=gl*0.18;
     ctx.beginPath(); ctx.moveTo(0,-ds); ctx.lineTo(ds,0); ctx.lineTo(0,ds); ctx.lineTo(-ds,0);
-    ctx.closePath(); ctx.fillStyle='rgba(255,225,255,'+(fa*0.7).toFixed(3)+')'; ctx.fill();
+    ctx.closePath(); ctx.fillStyle='rgba('+vzMix([255,225,255],VZ_C_WHITE,0)+','+(fa*0.7).toFixed(3)+')'; ctx.fill();
     ctx.restore();
   }
 
